@@ -4,14 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"terminal-gpt/colors"
+	"terminal-gpt/components"
+	"terminal-gpt/utils"
+
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/jmorganca/ollama/api"
 	"golang.org/x/term"
-	"terminal-gpt/colors"
-	"terminal-gpt/utils"
 )
 
 const PromptTemplate = "Which terminal command best describes the following: %s. respond with an object with 3 values \"command\" which is the suggested command. \"description\" which explains what the command does and \"safe\" which is either true or false depending on if the command could be dangerous to execute automatically."
@@ -26,7 +28,15 @@ type Model struct {
 	spinnerTick    int
 	bannerText     string
 	bannerStyle    lipgloss.Style
+	OllamaModel    OllamaModel
 }
+type OllamaModel string
+
+const (
+	Gemma2b          = "gemma:2b"
+	Gemma7b          = "gemma:7b"
+	Gemma7b_Instruct = "gemma:7b-instruct"
+)
 
 type OllamaResponse struct {
 	Command     string
@@ -105,12 +115,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					utils.CopyToClipboard(m.Response.Command)
 					return m.successBanner("Copied to clipboard"), nil
 				case 1:
-					if m.Response.Safe {
-						utils.ExecuteGeneratedCommand(m.Response.Command)
-						return m.successBanner("Command executed"), nil
-					} else {
-						return m.warningBanner("Command not executed because it is not safe, copy it and run it manually"), nil
-					}
+					m.Input.Focus()
+					m.Response = OllamaResponse{}
+					return m.resetBanner(), nil
 				case 2:
 					m.Input.Focus()
 					m.Input.SetValue("")
@@ -134,7 +141,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.spinnerTick++
 		if m.spinnerTick > len(m.spinner.Spinner.Frames)*2 {
 			m.spinnerTick = 0
-			m.spinner = spinner.New(spinner.WithSpinner(randomSpinner()))
+			m.spinner = components.GenerateSpinner(nil)
 			return m, m.spinner.Tick
 		}
 	case bannerMsg:
@@ -193,19 +200,20 @@ func (m Model) SendRequest() {
 		panic(e)
 	}
 	val := m.Input.Value()
-	m.Input.SetValue("")
 	m.Input.Blur()
 
 	go func() {
 		stream := false
+		var model_str string
+		model_str = string(m.OllamaModel)
 		ctx := context.Background()
 		_, err := client.Show(ctx, &api.ShowRequest{
-			Model: "gemma:2b",
+			Model: model_str,
 		})
 		if err != nil {
 			SetBanner("Pulling the model from the server")
 			client.Pull(ctx, &api.PullRequest{
-				Name: "gemma:2b",
+				Name: model_str,
 			}, func(resp api.ProgressResponse) error {
 				total := resp.Total
 				completed := resp.Completed
@@ -215,7 +223,7 @@ func (m Model) SendRequest() {
 			})
 		}
 		e = client.Generate(ctx, &api.GenerateRequest{
-			Model:  "gemma:2b",
+			Model:  model_str,
 			Prompt: fmt.Sprintf(PromptTemplate, val),
 			Format: "json",
 			Stream: &stream,
